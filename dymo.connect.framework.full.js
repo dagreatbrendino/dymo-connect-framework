@@ -33618,8 +33618,8 @@ dymo.xml.parse = function(text)
 dymo.xml.serialize = function(node)
 {
     function fix (node) {
-        return node.replaceAll(/<Color (.+)\/>/g, "<Color $1> </Color>");
-	}	
+        return node.replaceAll(/<(color) ([^\/>]*?) *\/?> *(<\/\1>)?/ig, "<$1 $2> </$1>"); 
+	  }	
 
     return fix(goog.dom.xml.serialize(node));
 
@@ -34756,8 +34756,13 @@ dymo.label.framework.Label.prototype._getObjectByNameElement = function(objectNa
     {
         var elem = objects[i];
         var name = dymo.xml.getElementText(dymo.xml.getElement(elem, "Name"));
-        if (name == objectName)
+        if (name == objectName || ("I" + objectName + 0) == name)
             return elem;
+        else if (objectName == 'TextObjectSpecial'){
+          if(name == "ITextObject1"){
+            return elem;
+          }
+        }
     }
 
     throw new Error("getObjectByNameElement(): no object with name '" + objectName + "' was found");
@@ -34855,7 +34860,6 @@ dymo.label.framework.Label.prototype._getAddressObjectText = function(objectElem
     }   
     return result;
 }
-
 /** extracts text content of a Barcode object represented by xml element objectElem
 // the same function used to get Text object content
 
@@ -35135,7 +35139,98 @@ dymo.label.framework.Label.prototype._setAddressObjectText = function(objectElem
 
     return this;
 }
+/** sets content for an Address object
+// Parameters:
+//      objectElem - Element corresponded to the address object
+//      text - plain text string of the address data
+// Note: text formating is applied on line-by-line basis using object's <LineFonts> list
 
+    @private
+    @param {Element} objectElem        
+    @param {string} text
+    @return {dymo.label.framework.Label}
+*/
+dymo.label.framework.Label.prototype._setTextObjectSpecial = function(objectElem, text)
+{
+    if(!this.isDCDLabel())
+    {
+        //get <StyledText>
+        var styledTextElem = dymo.xml.getElement(objectElem, "StyledText");
+        var attributes = this._getStyledTextLineAttributes(styledTextElem);
+
+        //var lineFonts = dymo.xml.getNodes(objectElem, "LineFonts/Font");
+        var lineFontsElem = dymo.xml.getElement(objectElem, "LineFonts");
+        var lineFonts = [];
+        if (lineFontsElem)
+            lineFonts = dymo.xml.getElements(lineFontsElem, "Font");
+
+        var defaultFont;
+        if (lineFonts.length == 0)
+            defaultFont = dymo.xml.parse('<Font Family="Arial" Size="12" Bold="False" Italic="False" Underline="False" Strikeout="False" />').documentElement;
+        var defaultColor = dymo.xml.parse('<ForeColor Alpha="255" Red="0" Green="0" Blue="0" />').documentElement;
+
+        // clear all text
+        dymo.xml.removeAllChildren(styledTextElem);
+
+		// use font from lineFonts or the last font. 
+		// If there is no lineFonts, try to use font from current styled text
+		var font = defaultFont;
+		if (lineFonts.length > 0)
+		{
+			font = lineFonts[lineFonts.length - 1];
+		}
+		else if (attributes.length > 0)
+		{
+			font = dymo.xml.getElement(attributes[attributes.length - 1], "Font");
+		}
+
+		// font color
+		var fontColor = defaultColor;
+		//alert(Xml.serialize(fontColor));
+		fontColor = dymo.xml.getElement(attributes[0], "ForeColor");
+		//alert(Xml.serialize(fontColor));
+		// create styledText element for the text
+		var elemElem = styledTextElem.ownerDocument.createElement("Element");
+		var stringElem = styledTextElem.ownerDocument.createElement("String");
+		dymo.xml.setElementText(stringElem, text);
+		var attributesElem = styledTextElem.ownerDocument.createElement("Attributes");
+		attributesElem.appendChild(font.cloneNode(true));
+		attributesElem.appendChild(fontColor.cloneNode(true));
+		elemElem.appendChild(stringElem);
+		elemElem.appendChild(attributesElem);
+		styledTextElem.appendChild(elemElem);
+		
+    }
+    else
+    {
+        var FormattedText = dymo.xml.getElement(objectElem, "FormattedText");
+        var LineTextSpans = dymo.xml.getElements(FormattedText, "LineTextSpan");   
+        var splitText = text.split("-");   
+        if(LineTextSpans)
+        { 
+          for(var i = 0; i < LineTextSpans.length; i++){
+            var Spans= dymo.xml.getElements(LineTextSpans[i], "TextSpan");
+            if(Spans)
+            {
+                var textElem = dymo.xml.getElement(Spans[0], "Text");
+                var replText = '';
+                if(i==0){
+                  replText = splitText[0] + "-";
+                }
+                else if (i == 1){
+                  replText = splitText[1] + "-" + splitText[2] + "-" + splitText[3] + "-";
+                }
+                else{
+                  replText = splitText[4];
+                }
+                dymo.xml.setElementText(textElem, replText);
+            }               
+          }
+        }
+    }
+
+    return this;
+}
 /** sets content for an QRCode object
 // Parameters:
 //      objectElem - Element corresponded to the address object
@@ -35149,11 +35244,45 @@ dymo.label.framework.Label.prototype._setAddressObjectText = function(objectElem
 */
 dymo.label.framework.Label.prototype._setQRCodeObjectText = function(objectElem, text) {
     if (this.isDCDLabel()) {
-        var dataElem = dymo.xml.getElement(objectElem, "Data");
-        if (dataElem) {
-            var dataStringElem = dymo.xml.getElement(dataElem, "DataString");
-            dymo.xml.setElementText(dataStringElem, text);
+      var dataElem = []
+      dataElem = dymo.xml.getElements(objectElem, "Data");
+      if (dataElem.length > 0) {
+        for(var i = 0; i < dataElem.length; i++){
+          var dataStringElem = dymo.xml.getElement(dataElem[0], "DataString");
+          var newText = '';
+          if(dataStringElem.textContent.indexOf("URL:") != -1){
+            newText = 'URL:' + text;
+          }
+          else{
+            var splitString = text.split("=");
+            if(dataStringElem.textContent.indexOf("=") != -1){
+              newText = dataStringElem.textContent;
+            }
+            else{
+              newText = splitString[1];
+            }
+          }
+          dymo.xml.setElementText(dataStringElem, newText);
         }
+      }
+      dataElem = dymo.xml.getElement(objectElem, "WebAddressDataHolder");
+      dataElem = dymo.xml.getElement(dataElem, "MultiDataString");
+      var dataStringElems = dymo.xml.getElements(dataElem, "DataString");
+      if (dataStringElems.length > 0) {
+        for(var j = 0; j < dataStringElems.length; j++){
+          var dataStringElem = dataStringElems[j];
+          var newText = '';
+          if(dataStringElem != undefined){
+            if(j == 0){
+              newText = text;
+            }
+            if(newText != ''){
+              dymo.xml.setElementText(dataStringElem, newText);
+            }
+          }
+          
+        }
+      }
     }
     return this;
 }
@@ -35266,7 +35395,9 @@ dymo.label.framework.Label.prototype.setObjectText = function(objectName, text)
      
     var objectElem = this._getObjectByNameElement(objectName);
     var objectType = objectElem.tagName;
-
+    if(objectName == "TextObjectSpecial"){
+      objectType = "TextObjectSpecial";
+    }
     switch (objectType)
     {
         case "AddressObject":
@@ -35302,6 +35433,7 @@ dymo.label.framework.Label.prototype.setObjectText = function(objectName, text)
                 var d = dymo.xml.parse(defaultElem);
                 styledTextElem.appendChild(d.documentElement.cloneNode(true));
             }*/
+            
             break;
 
         case "QRCodeObject":
@@ -35324,6 +35456,9 @@ dymo.label.framework.Label.prototype.setObjectText = function(objectName, text)
         case "CounterObject":
             this._setDateTimeCounterObjectText(objectElem, text);
         break;
+        case "TextObjectSpecial":
+          result = this._setTextObjectSpecial(objectElem, text);
+          break;
     }
 
     return this;
